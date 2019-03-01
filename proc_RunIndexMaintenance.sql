@@ -1,5 +1,9 @@
 --------------------------------------------------------------------------------
 --
+-- Author: TechSmith Corporation
+-- License: MIT
+-- Repository: https://github.com/TechSmith/sql-server-index-maintenance
+--
 -- Creates (or alters) a stored procedure intended to do basic index 
 -- maintenance for all indexes in need of maintenance against a given database.
 --

@@ -1,5 +1,9 @@
 --------------------------------------------------------------------------------
 --
+-- Author: TechSmith Corporation
+-- License: MIT
+-- Repository: https://github.com/TechSmith/sql-server-index-maintenance
+--
 -- SQL Script which configures SQL Server Settings for Database Mail.
 -- The settings baked into this script are designed to be used by maintenance
 -- scripts, but variables should be easily configurable to be used for other
