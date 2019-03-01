@@ -4,9 +4,9 @@ A stored proceedure for Microsoft SQL Server to perform basic index maintenance 
 
 ## Installation
 
-Executing proc_RunIndexMaintenance.sql will install the stored procedure.
+Executing [proc_RunIndexMaintenance.sql](proc_RunIndexMaintenance.sql) will install the stored procedure.
 
-You **must** have Database Mail configured. By default, this script expects an account name of **Maintenance Mail Account**. See the EnableDBMail.sql script if you need assistance.
+You **must** have Database Mail configured. By default, this script expects an account name of **Maintenance Mail Account**. See the [EnableDBMail.sql](EnableDBMail.sql) script if you need assistance.
 
 ## Execution
 
