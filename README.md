@@ -4,9 +4,9 @@ A stored proceedure for Microsoft SQL Server to perform basic index maintenance 
 
 ## Installation
 
-Executing [proc_RunIndexMaintenance.sql](proc_RunIndexMaintenance.sql) will install the stored procedure.
+Executing proc_RunIndexMaintenance.sql will install the stored procedure.
 
-You **must** have Database Mail configured. By default, this script expects an account name of **Maintenance Mail Account**. See the [EnableDBMail.sql](EnableDBMail.sql) script if you need assistance.
+You **must** have Database Mail configured. By default, this script expects an account name of **Maintenance Mail Account**. See the EnableDBMail.sql script if you need assistance.
 
 ## Execution
 
@@ -38,3 +38,16 @@ Specifies how indexes should be rebuilt with regard to availablility. Valid opti
 Valid options are:
 * 0 - Do not include additional information about the operation in the email report
 * 1 - Include additional information about the operation in the email report
+
+## Sample Report
+
+<pre>Subject: SampServer SampDB Index Report
+Index Maintenance Sproc report for server SampServer on database: SampDB
+Finished querying for index information. Started At: 2019-03-03 02:00:00 Ended At: 2019-03-03 02:02:32 Took 2 seconds
+Rebuilt Index: [dbo].[Customer].[IX_Customer_CustomerID]
+...was 45.1696 percent fragmented.
+Reorganized Index: [dbo].[Contact].[IX_Contact_Email]
+...was 7.96653 percent fragmented.
+Reorganized Index: [dbo].[Order].[IX_Order_Sku]
+...was 5.01085 percent fragmented.
+Started At: 2019-03-03 02:00:00. Ended At: 2019-03-03 02:04:24. Total Execution Time in Minutes: 4</pre>
