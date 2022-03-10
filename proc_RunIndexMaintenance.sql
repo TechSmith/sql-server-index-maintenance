@@ -51,7 +51,8 @@ DECLARE
    ,@v_EngineEditionName AS VARCHAR( 50 )
    ,@v_NewLine AS CHAR(2) = CHAR(13)+CHAR(10)
    ,@v_OperationStartTime AS DATETIME2(0)
-   ,@v_OperationStopTime AS DATETIME2(0);
+   ,@v_OperationStopTime AS DATETIME2(0)
+   ,@v_StaleStatisticsCutoffTime AS DATETIME2(0);
 
 -- Table variable to store the indexes in need of maintenance
 DECLARE @v_IndexInformationTable AS TABLE
@@ -67,6 +68,7 @@ DECLARE @v_IndexInformationTable AS TABLE
 
 BEGIN
    SET @v_StartTime = GETDATE();
+   SET @v_StaleStatisticsCutoffTime = DATEADD(DAY, -30, GETDATE());
    SELECT @v_EmailReport = 'Index Maintenance Sproc report for server ' + @@SERVERNAME + ' on database: ' + @p_DatabaseName;
    SELECT @v_EmailSubject = @@SERVERNAME + ' ' + @p_DatabaseName + ' Index Report';
 
@@ -165,34 +167,50 @@ BEGIN
                AND
                   c.system_type_id IN '+ @v_LobColumnTypesClause +'
            ), 0 ) AS DoesContainLob
-         ,stats.avg_fragmentation_in_percent AS AverageFragmentationPercent
+         ,phys_stats.avg_fragmentation_in_percent AS AverageFragmentationPercent
+         ,stats_props.last_updated AS StatsLastUpdatedTime
+         ,CASE
+            WHEN
+               stats_props.last_updated IS NULL OR stats_props.last_updated <= @v_StaleStatisticsCutoffTime
+            THEN 1
+            ELSE 0
+         END AS AreStatsStale
       FROM
-         sys.dm_db_index_physical_stats( DB_ID( '''+ @p_DatabaseName + ''' ) , NULL, NULL, NULL, ''LIMITED'') AS stats
+         sys.dm_db_index_physical_stats( DB_ID( '''+ @p_DatabaseName + ''' ) , NULL, NULL, NULL, ''LIMITED'') AS phys_stats
       INNER JOIN
-         ['+ @p_DatabaseName +'].sys.indexes AS i ON i.object_id = stats.object_id AND i.index_id = stats.index_id
+         ['+ @p_DatabaseName +'].sys.indexes AS i ON i.object_id = phys_stats.object_id AND i.index_id = phys_stats.index_id
       INNER JOIN
-         ['+ @p_DatabaseName +'].sys.objects AS o ON o.object_id = stats.object_id
+         ['+ @p_DatabaseName +'].sys.objects AS o ON o.object_id = phys_stats.object_id
       INNER JOIN
          ['+ @p_DatabaseName +'].sys.schemas AS s ON s.schema_id = o.schema_id
+      INNER JOIN
+	      ['+ @p_DatabaseName +'].sys.stats as stats ON stats.object_id = phys_stats.object_id AND stats.name = i.name
+      CROSS APPLY
+         sys.dm_db_stats_properties(o.object_id, stats.stats_id) AS stats_props
       WHERE
           -- Indexes with less than 1,000 page files are not big enough to worry about
-          stats.page_count >= 1000
+          phys_stats.page_count >= 1000
       AND
-         -- Best practices say to start reorganizing at 5% fragmentation
-         stats.avg_fragmentation_in_percent >= 5
+         (phys_stats.avg_fragmentation_in_percent >= 5 -- Best practices say to start reorganizing at 5% fragmentation
+         OR
+            stats_props.last_updated IS NULL -- Update if stats never updated
+         OR
+            stats_props.last_updated <= @v_StaleStatisticsCutoffTime) -- Update if stats older than cutoff date
       AND
          -- Ensures that there is only one row returned per index
-         stats.alloc_unit_type_desc = ''IN_ROW_DATA''
+         phys_stats.alloc_unit_type_desc = ''IN_ROW_DATA''
       ORDER BY
          -- Order from worst to best which is how optimization will take place
-         stats.avg_fragmentation_in_percent
+         phys_stats.avg_fragmentation_in_percent
       DESC';
    
    SET @v_OperationStartTime = GETDATE();
 
    --Read the results into the table variable
    BEGIN TRY
-      INSERT INTO @v_IndexInformationTable EXECUTE sp_executesql @v_GetIndexesCmd;
+      INSERT INTO @v_IndexInformationTable EXECUTE sp_executesql @v_GetIndexesCmd
+         ,N'@v_StaleStatisticsCutoffTime DATETIME2(0)'
+         ,@v_StaleStatisticsCutoffTime = @v_StaleStatisticsCutoffTime;
    END TRY
    BEGIN CATCH
       SELECT @v_EmailReport = @v_EmailReport + @v_NewLine + 'Failed to query indexes due to exception: ' + @v_NewLine + ERROR_MESSAGE();
@@ -211,6 +229,9 @@ BEGIN
       ,@v_CurArePageLocksEnabled AS BIT
       ,@v_CurDoesContainLob AS BIT
       ,@v_CurFragmentation AS FLOAT
+      ,@v_CurStatsLastUpdatedTime AS DATETIME2(0)
+      ,@v_CurAreStatsStale AS BIT
+      ,@v_CurIsRebuildNecessary AS BIT
       ,@v_Counter AS SMALLINT
       ,@v_LastRow AS SMALLINT
       ,@v_SqlRebuildHints AS NVARCHAR(50)
@@ -236,6 +257,9 @@ BEGIN
          ,@v_CurArePageLocksEnabled = i.ArePageLocksEnabled
          ,@v_CurDoesContainLob = i.DoesContainLob
          ,@v_CurFragmentation = i.AverageFragmentationPercent
+         ,@v_CurStatsLastUpdatedTime = i.StatsLastUpdatedTime
+         ,@v_CurAreStatsStale = i.AreStatsStale
+         ,@v_CurIsRebuildNecessary = CASE WHEN i.AverageFragmentationPercent >= 30 OR i.AreStatsStale THEN 1 ELSE 0 END -- Rebuild regardless of fragmentation if stats are stale
       FROM
          @v_IndexInformationTable AS i
       WHERE
@@ -255,7 +279,7 @@ BEGIN
          SET @v_SqlRebuildHints = '';
 
       -- If the index needs to be skipped, log that in the email body and continue to the next index      
-      IF ( @p_RebuildMode = 'onlineonly' AND @v_CurFragmentation >= 30 AND ( @v_IsOnlineRebuildSupported = 0 OR @v_CurDoesContainLob = 1 ) )
+      IF ( @p_RebuildMode = 'onlineonly' AND @v_CurIsRebuildNecessary AND ( @v_IsOnlineRebuildSupported = 0 OR @v_CurDoesContainLob = 1 ) )
       BEGIN
          IF ( @v_CurIndexIsHeap = 1 )
             SET @v_CurIndex = '(heap)';
@@ -265,33 +289,33 @@ BEGIN
       END
 
       -- Rebuilding a heap is different than a typical index
-      IF ( @v_CurIndexIsHeap = 1 AND @v_CurFragmentation >= 30 )
+      IF ( @v_CurIndexIsHeap = 1 AND @v_CurIsRebuildNecessary )
          BEGIN TRY
             SELECT @v_SqlRebuildHeap = 'ALTER TABLE [' + @p_Databasename + '].' + @v_CurSchema + '.' + @v_CurTable + ' REBUILD' + @v_SqlRebuildHints;
             SET @v_OperationStartTime = GETDATE();
             EXECUTE sp_executesql @v_SqlRebuildHeap;
             SET @v_OperationStopTime = GETDATE();
-            SELECT @v_EmailReport = @v_EmailReport + @v_NewLine + 'Rebuilt Heap: ' + @v_CurSchema + '.' + @v_CurTable + @v_NewLine + '...was ' + CAST( @v_CurFragmentation AS VARCHAR(20) ) + ' percent fragmented.'
+            SELECT @v_EmailReport = @v_EmailReport + @v_NewLine + 'Rebuilt Heap: ' + @v_CurSchema + '.' + @v_CurTable + @v_NewLine + '...was ' + CAST( @v_CurFragmentation AS VARCHAR(20) ) + ' percent fragmented.' + @v_NewLine + ' ...stats previously updated on ' + CAST( @v_CurStatsLastUpdatedTime, AS VARCHAR(20) );
             SELECT @v_EmailReport = @v_EmailReport + @v_NewLine + 'Started At: ' + CAST( @v_OperationStartTime AS VARCHAR(20) ) + ' Ended At: ' + CAST( @v_OperationStopTime AS VARCHAR(20) ) + ' Total Execution Time in Minutes: ' + CAST( DATEDIFF( MINUTE, @v_StartTime, @v_StopTime ) AS VARCHAR(20) );
             SELECT @v_QueriesExecuted = @v_QueriesExecuted + @v_NewLine + @v_SqlRebuildHeap;
          END TRY
          BEGIN CATCH
             SELECT @v_EmailReport = @v_EmailReport + @v_NewLine + 'Failed to execute rebuild heap statement: ' + @v_NewLine + @v_SqlRebuildHeap + @v_NewLine + 'Due to exception: ' + @v_NewLine + ERROR_MESSAGE();
          END CATCH;
-      ELSE IF (  @v_CurIndex IS NOT NULL AND @v_CurFragmentation >= 30 )
+      ELSE IF ( @v_CurIndex IS NOT NULL AND @v_CurIsRebuildNecessary )
          BEGIN TRY
             SELECT @v_SqlRebuildIndex = 'ALTER INDEX ' + @v_CurIndex + ' ON [' + @p_DatabaseName + '].' + @v_CurSchema + '.' + @v_CurTable + ' REBUILD' + @v_SqlRebuildHints;
             SET @v_OperationStartTime = GETDATE();
             EXECUTE sp_executesql @v_SqlRebuildIndex;
             SET @v_OperationStopTime = GETDATE();
-            SELECT @v_EmailReport = @v_EmailReport + @v_NewLine + 'Rebuilt Index: ' + @v_CurSchema + '.' + @v_CurTable + '.' + @v_CurIndex + @v_NewLine + '...was ' + CAST( @v_CurFragmentation AS VARCHAR(20) ) + ' percent fragmented.';
+            SELECT @v_EmailReport = @v_EmailReport + @v_NewLine + 'Rebuilt Index: ' + @v_CurSchema + '.' + @v_CurTable + '.' + @v_CurIndex + @v_NewLine + '...was ' + CAST( @v_CurFragmentation AS VARCHAR(20) ) + ' percent fragmented.' + @v_NewLine + ' ...stats previously updated on ' + CAST( @v_CurStatsLastUpdatedTime, AS VARCHAR(20) );
             SELECT @v_EmailReport = @v_EmailReport + @v_NewLine + 'Started At: ' + CAST( @v_OperationStartTime AS VARCHAR(20) ) + ' Ended At: ' + CAST( @v_OperationStopTime AS VARCHAR(20) ) + ' Total Execution Time in Minutes: ' + CAST( DATEDIFF( MINUTE, @v_StartTime, @v_StopTime ) AS VARCHAR(20) );
             SELECT @v_QueriesExecuted = @v_QueriesExecuted + @v_NewLine + @v_SqlRebuildIndex;
          END TRY
          BEGIN CATCH
             SELECT @v_EmailReport = @v_EmailReport + @v_NewLine + 'Failed to execute rebuild statement: ' + @v_NewLine + @v_SqlRebuildIndex + @v_NewLine + 'Due to exception: ' + @v_NewLine + ERROR_MESSAGE();
          END CATCH;
-      ELSE IF (  @v_CurIndex IS NOT NULL
+      ELSE IF ( @v_CurIndex IS NOT NULL
                     AND @v_CurArePageLocksEnabled = 1  -- Only indexes w/ Page Locking can be reorganized
                     AND @v_CurFragmentation >= 5 )
          BEGIN TRY
@@ -299,7 +323,7 @@ BEGIN
             SET @v_OperationStartTime = GETDATE();
             EXECUTE sp_executesql @v_SqlReorganizeIndex;
             SET @v_OperationStopTime = GETDATE();
-            SELECT @v_EmailReport = @v_EmailReport + @v_NewLine + 'Reorganized Index: ' + @v_CurSchema + '.' + @v_CurTable + '.' + @v_CurIndex  + @v_NewLine + '...was ' + CAST( @v_CurFragmentation AS VARCHAR(20) ) + ' percent fragmented.';
+            SELECT @v_EmailReport = @v_EmailReport + @v_NewLine + 'Reorganized Index: ' + @v_CurSchema + '.' + @v_CurTable + '.' + @v_CurIndex  + @v_NewLine + '...was ' + CAST( @v_CurFragmentation AS VARCHAR(20) ) + ' percent fragmented.' + @v_NewLine + ' ...stats previously updated on ' + CAST( @v_CurStatsLastUpdatedTime, AS VARCHAR(20) );
             SELECT @v_EmailReport = @v_EmailReport + @v_NewLine + 'Started At: ' + CAST( @v_OperationStartTime AS VARCHAR(20) ) + ' Ended At: ' + CAST( @v_OperationStopTime AS VARCHAR(20) ) + ' Total Execution Time in Minutes: ' + CAST( DATEDIFF( MINUTE, @v_StartTime, @v_StopTime ) AS VARCHAR(20) );
             SELECT @v_QueriesExecuted = @v_QueriesExecuted + @v_NewLine + @v_SqlReorganizeIndex;
          END TRY
