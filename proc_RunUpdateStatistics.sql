@@ -33,8 +33,20 @@ ALTER PROCEDURE dbo.proc_RunUpdateStatistics
 AS
 DECLARE @TableName NVARCHAR(257);
 DECLARE @sql NVARCHAR(MAX);
+DECLARE @v_StaleStatisticsCutoffTime DATETIME2(0) = DATEADD(DAY, -30, GETDATE());
 
-SET @v_GetStatisticsCmd = '
+-- Table variable to store the statistics that are in need of maintenance
+DECLARE @v_StaleStatisticsInformationTable AS TABLE
+   (  
+       StatisticsMaintenanceId INT IDENTITY( 1,1 )
+      ,SchemaName SYSNAME
+      ,TableName SYSNAME
+      ,IndexName SYSNAME NULL -- Heaps do not have an index name
+      ,StatsLastUpdatedTime DATETIME2(0)
+      ,RowCountOnLastStatsUpdate BIGINT
+   );
+
+SET @v_GetStaleStatisticsCmd = '
    SELECT
       s.name AS SchemaName
       ,o.name AS TableName
@@ -57,29 +69,25 @@ SET @v_GetStatisticsCmd = '
       i.auto_created = 0
    AND
       stats.auto_created = 0
+   AND
+      (stats_props.last_updated IS NULL
+   OR
+      stats_props.last_updated <= @v_StaleStatisticsCutoffTime)
    ORDER BY
       stats_props.last_updated
    ASC';
 
-DECLARE TableCursor CURSOR READ_ONLY FOR
-SELECT
-    TABLE_SCHEMA + '.' + TABLE_NAME
-FROM 
-    INFORMATION_SCHEMA.TABLES
-WHERE
-    TABLE_TYPE = 'BASE TABLE';
+BEGIN TRY
+   INSERT INTO @v_StaleStatisticsInformationTable EXECUTE sp_executesql @v_GetStaleStatisticsCmd
+   ,N'@v_StaleStatisticsCutoffTime DATETIME2(0)'
+   ,@v_StaleStatisticsCutoffTime = @v_StaleStatisticsCutoffTime;
+END TRY
+BEGIN CATCH
+   GOTO done;
+END CATCH;
 
-OPEN TableCursor;
-FETCH NEXT FROM TableCursor INTO @TableName;
 
-WHILE @@fetch_status = 0
-BEGIN
-    SET @sql = 'UPDATE STATISTICS ' + @TableName + ' WITH FULLSCAN';
-    EXEC sp_executesql @sql;
-    FETCH NEXT FROM TableCursor INTO @TableName;
-END
- 
-CLOSE TableCursor;
-DEALLOCATE TableCursor;
+-- GOTO label to break out of execution on error
+done:
 
 GO
