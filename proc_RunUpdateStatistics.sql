@@ -185,6 +185,41 @@ INSERT INTO @v_StaleStatisticsInformationWithRowCountTable
    WHERE
       r.TableRowCount >= @p_MinimumTableRowCountToUpdate
 
+DECLARE
+    @v_CurSchema AS SYSNAME
+   ,@v_CurTable AS SYSNAME
+   ,@v_CurIndex AS SYSNAME
+   ,@v_CurStatsLastUpdatedTime AS DATETIME2(0)
+   ,@v_CurRowCountOnLastStatsUpdate AS BIGINT
+   ,@v_CurCurrentRowCount AS BIGINT
+   ,@v_Counter AS SMALLINT
+   ,@v_LastRow AS SMALLINT
+   ,@v_UpdateStatisticsCmd AS NVARCHAR(MAX)
+
+SET @v_Counter = 1;
+SELECT @v_LastRow = COUNT(1) FROM @v_StaleStatisticsInformationWithRowCountTable;
+
+-- Loop through the statistics and force a full scan
+WHILE ( @v_Counter <= @v_LastRow )
+BEGIN
+   SELECT
+       @v_CurSchema = '[' + s.SchemaName + ']'
+      ,@v_CurTable = '[' + s.TableName + ']'
+      ,@v_CurIndex = '[' + s.IndexName + ']'
+      ,@v_CurStatsLastUpdatedTime = s.StatsLastUpdatedTime
+      ,@v_CurRowCountOnLastStatsUpdate = s.RowCountOnLastStatsUpdate
+      ,@v_CurCurrentRowCount = s.TableRowCount
+   FROM
+      @v_StaleStatisticsInformationWithRowCountTable AS s
+   WHERE
+      s.StatisticsMaintenanceId = @v_Counter;
+
+   SET @v_UpdateStatisticsCmd = 'UPDATE STATISTICS ' + @v_CurSchema + '.' + @v_CurTable + ' ' + @v_CurIndex + ' WITH FULLSCAN';
+   EXECUTE sp_executesql @v_UpdateStatisticsCmd;
+
+   SET @v_Counter = @v_Counter + 1;
+END;
+
 -- GOTO label to break out of execution on error
 done:
 
