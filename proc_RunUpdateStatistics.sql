@@ -17,6 +17,7 @@
 -- EXECUTE dbo.proc_RunUpdateStatistics
 --     @p_DatabaseName = 'nameOfDatabase'
 --    ,@p_RecipientEmail = 'first.last@email.com'
+--    ,@p_MinimumTableRowCountToUpdate = 1000
 --    ,@p_IsDebug = 0
 --
 --  Enabling IsDebug will cause additional information to be included in the email report.
@@ -29,11 +30,28 @@ GO
 ALTER PROCEDURE dbo.proc_RunUpdateStatistics
     @p_DatabaseName AS SYSNAME
    ,@p_RecipientEmail AS NVARCHAR( 256 )
+   ,@p_MinimumTableRowCountToUpdate AS BIGINT
    ,@p_IsDebug AS BIT
 AS
 DECLARE @TableName NVARCHAR(257);
 DECLARE @sql NVARCHAR(MAX);
 DECLARE @v_StaleStatisticsCutoffTime DATETIME2(0) = DATEADD(DAY, -30, GETDATE());
+DECLARE @v_GetTablesCmd NVARCHAR(MAX);
+DECLARE @v_GetStaleStatisticsCmd NVARCHAR(MAX);
+
+DECLARE @v_DatabaseTablesTable AS TABLE
+   (
+      DatabaseTableId INT IDENTITY( 1,1 )
+      ,SchemaName SYSNAME
+      ,TableName SYSNAME
+   );
+
+DECLARE @v_RowCountsTable AS TABLE
+   (
+      SchemaName SYSNAME
+      ,TableName SYSNAME
+      ,TableRowCount BIGINT
+   );
 
 -- Table variable to store the statistics that are in need of maintenance
 DECLARE @v_StaleStatisticsInformationTable AS TABLE
@@ -45,6 +63,71 @@ DECLARE @v_StaleStatisticsInformationTable AS TABLE
       ,StatsLastUpdatedTime DATETIME2(0)
       ,RowCountOnLastStatsUpdate BIGINT
    );
+
+DECLARE @v_StaleStatisticsInformationWithRowCountTable AS TABLE
+   (  
+       StatisticsMaintenanceId INT IDENTITY( 1,1 )
+      ,SchemaName SYSNAME
+      ,TableName SYSNAME
+      ,IndexName SYSNAME NULL -- Heaps do not have an index name
+      ,StatsLastUpdatedTime DATETIME2(0)
+      ,RowCountOnLastStatsUpdate BIGINT
+      ,CurrentTableRowCount BIGINT
+   );
+
+SET @v_GetTablesCmd = '
+   SELECT
+      t.TABLE_SCHEMA AS SchemaName
+      ,t.TABLE_NAME AS TableName
+   FROM
+      ['+ @p_DatabaseName +'].INFORMATION_SCHEMA.TABLES AS t
+   WHERE
+      t.TABLE_TYPE = ''BASE TABLE''';
+
+BEGIN TRY
+   INSERT INTO @v_DatabaseTablesTable EXECUTE sp_executesql @v_GetTablesCmd;
+END TRY
+BEGIN CATCH
+   GOTO done;
+END CATCH;
+
+DECLARE
+    @v_CurCountSchema AS SYSNAME
+   ,@v_CurCountTable AS SYSNAME
+   ,@v_GetRowCountCmd AS NVARCHAR(MAX)
+   ,@v_RowCountCounter AS SMALLINT
+   ,@v_DatabaseTablesLastRow AS SMALLINT
+
+SET @v_RowCountCounter = 1;
+SELECT @v_DatabaseTablesLastRow = COUNT(1) FROM @v_DatabaseTablesTable;
+
+WHILE ( @v_RowCountCounter <= @v_DatabaseTablesLastRow )
+BEGIN
+   SELECT
+       @v_CurCountSchema = d.SchemaName
+      ,@v_CurCountTable = d.TableName
+   FROM
+      @v_DatabaseTablesTable AS d
+   WHERE
+      d.DatabaseTableId = @v_RowCountCounter;
+
+   SET @v_GetRowCountCmd = '
+      SELECT
+         ''' + @v_CurCountSchema + ''' AS SchemaName
+         ,''' + @v_CurCountTable + ''' AS TableName
+         ,COUNT(1) AS TableRowCount
+      FROM
+         ['+ @p_DatabaseName +'].['+ @v_CurCountSchema +'].['+ @v_CurCountTable +']';
+
+   BEGIN TRY
+      INSERT INTO @v_RowCountsTable EXECUTE sp_executesql @v_GetRowCountCmd;
+   END TRY
+   BEGIN CATCH
+      GOTO done;
+   END CATCH;
+
+   SET @v_RowCountCounter = @v_RowCountCounter + 1;
+END;
 
 SET @v_GetStaleStatisticsCmd = '
    SELECT
@@ -86,6 +169,21 @@ BEGIN CATCH
    GOTO done;
 END CATCH;
 
+INSERT INTO @v_StaleStatisticsInformationWithRowCountTable
+   SELECT
+      s.SchemaName
+      ,s.TableName
+      ,s.IndexName
+      ,s.StatsLastUpdatedTime
+      ,s.RowCountOnLastStatsUpdate
+      ,r.TableRowCount
+   FROM
+      @v_StaleStatisticsInformationTable AS s
+   INNER JOIN
+      @v_RowCountsTable AS r ON r.SchemaName = s.SchemaName AND r.TableName = s.TableName
+   -- Skip tables that have very few rows, as updated stats will matter much less
+   WHERE
+      r.TableRowCount >= @p_MinimumTableRowCountToUpdate
 
 -- GOTO label to break out of execution on error
 done:
