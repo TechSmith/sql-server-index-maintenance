@@ -33,11 +33,16 @@ ALTER PROCEDURE dbo.proc_RunUpdateStatistics
    ,@p_MinimumTableRowCountToUpdate AS BIGINT
    ,@p_IsDebug AS BIT
 AS
-DECLARE @TableName NVARCHAR(257);
-DECLARE @sql NVARCHAR(MAX);
-DECLARE @v_StaleStatisticsCutoffTime DATETIME2(0) = DATEADD(DAY, -30, GETDATE());
-DECLARE @v_GetTablesCmd NVARCHAR(MAX);
-DECLARE @v_GetStaleStatisticsCmd NVARCHAR(MAX);
+DECLARE
+    @v_StaleStatisticsCutoffTime DATETIME2(0) = DATEADD(DAY, -30, GETDATE())
+   ,@v_GetTablesCmd NVARCHAR(MAX)
+   ,@v_GetStaleStatisticsCmd NVARCHAR(MAX)
+   ,@v_EmailReport AS NVARCHAR( MAX )
+   ,@v_EmailSubject AS NVARCHAR( 255 )
+   ,@v_QueriesExecuted AS NVARCHAR( MAX )
+   ,@v_NewLine AS CHAR(2) = CHAR(13)+CHAR(10)
+   ,@v_OperationStartTime AS DATETIME2(0)
+   ,@v_OperationStopTime AS DATETIME2(0);
 
 DECLARE @v_DatabaseTablesTable AS TABLE
    (
@@ -76,6 +81,23 @@ DECLARE @v_StaleStatisticsInformationWithRowCountTable AS TABLE
    );
 
 BEGIN
+   SET @v_StartTime = GETDATE();
+   SELECT @v_EmailReport = 'Statistics Maintenance Sproc report for server ' + @@SERVERNAME + ' on database: ' + @p_DatabaseName;
+   SELECT @v_EmailSubject = @@SERVERNAME + ' ' + @p_DatabaseName + ' Statistics Report';
+
+   -- Enabling debugging mode for additional details in email report
+   IF @p_IsDebug <> 1 AND @p_IsDebug <> 0
+      SET @p_IsDebug = 0
+   SET @v_QueriesExecuted = '';
+
+   -- Before doing anything, validate that the database exists.  This should
+   -- prevent any SQL Injection attacks
+   IF DB_ID( @p_DatabaseName ) IS NULL
+   BEGIN
+      SELECT @v_EmailReport = @v_EmailReport + @v_NewLine + 'Database not found: ' + @p_DatabaseName;
+      GOTO done;
+   END;
+
    SET @v_GetTablesCmd = '
       SELECT
          t.TABLE_SCHEMA AS SchemaName
@@ -85,12 +107,19 @@ BEGIN
       WHERE
          t.TABLE_TYPE = ''BASE TABLE''';
 
+   SET @v_OperationStartTime = GETDATE();
+
    BEGIN TRY
       INSERT INTO @v_DatabaseTablesTable EXECUTE sp_executesql @v_GetTablesCmd;
    END TRY
    BEGIN CATCH
+      SELECT @v_EmailReport = @v_EmailReport + @v_NewLine + 'Failed to query database tables due to exception: ' + @v_NewLine + ERROR_MESSAGE();
       GOTO done;
    END CATCH;
+
+   SET @v_OperationStopTime = GETDATE();
+
+   SELECT @v_EmailReport = @v_EmailReport + @v_NewLine + 'Finished querying for database tables. ' + 'Started At: ' + CAST( @v_OperationStartTime AS VARCHAR(20) ) + ' Ended At: ' + CAST( @v_OperationStopTime AS VARCHAR(20) ) + ' Took ' + CAST( DATEDIFF( SECOND, @v_OperationStartTime, @v_OperationStopTime ) AS VARCHAR(20) )  + ' seconds';
 
    DECLARE
       @v_CurCountSchema AS SYSNAME
@@ -101,6 +130,8 @@ BEGIN
 
    SET @v_RowCountCounter = 1;
    SELECT @v_DatabaseTablesLastRow = COUNT(1) FROM @v_DatabaseTablesTable;
+
+   SET @v_OperationStartTime = GETDATE();
 
    WHILE ( @v_RowCountCounter <= @v_DatabaseTablesLastRow )
    BEGIN
@@ -124,11 +155,16 @@ BEGIN
          INSERT INTO @v_RowCountsTable EXECUTE sp_executesql @v_GetRowCountCmd;
       END TRY
       BEGIN CATCH
+         SELECT @v_EmailReport = @v_EmailReport + @v_NewLine + 'Failed to query table row count for ' + @v_CurCountSchema + '.' + @v_CurCountTable + ': ' + @v_NewLine + ERROR_MESSAGE();
          GOTO done;
       END CATCH;
 
       SET @v_RowCountCounter = @v_RowCountCounter + 1;
    END;
+
+   SET @v_OperationStopTime = GETDATE();
+
+   SELECT @v_EmailReport = @v_EmailReport + @v_NewLine + 'Finished querying for table row counts. ' + 'Started At: ' + CAST( @v_OperationStartTime AS VARCHAR(20) ) + ' Ended At: ' + CAST( @v_OperationStopTime AS VARCHAR(20) ) + ' Took ' + CAST( DATEDIFF( SECOND, @v_OperationStartTime, @v_OperationStopTime ) AS VARCHAR(20) )  + ' seconds';
 
    SET @v_GetStaleStatisticsCmd = '
       SELECT
@@ -161,12 +197,15 @@ BEGIN
          stats_props.last_updated
       ASC';
 
+   SET @v_OperationStartTime = GETDATE();
+
    BEGIN TRY
       INSERT INTO @v_StaleStatisticsInformationTable EXECUTE sp_executesql @v_GetStaleStatisticsCmd
       ,N'@v_StaleStatisticsCutoffTime DATETIME2(0)'
       ,@v_StaleStatisticsCutoffTime = @v_StaleStatisticsCutoffTime;
    END TRY
    BEGIN CATCH
+      SELECT @v_EmailReport = @v_EmailReport + @v_NewLine + 'Failed to query statistics in need of update: ' + @v_NewLine + ERROR_MESSAGE();
       GOTO done;
    END CATCH;
 
@@ -185,6 +224,10 @@ BEGIN
       -- Skip tables that have very few rows, as updated stats will matter much less
       WHERE
          r.TableRowCount >= @p_MinimumTableRowCountToUpdate
+
+   SET @v_OperationStopTime = GETDATE();
+
+   SELECT @v_EmailReport = @v_EmailReport + @v_NewLine + 'Finished querying for statistics in need of update. ' + 'Started At: ' + CAST( @v_OperationStartTime AS VARCHAR(20) ) + ' Ended At: ' + CAST( @v_OperationStopTime AS VARCHAR(20) ) + ' Took ' + CAST( DATEDIFF( SECOND, @v_OperationStartTime, @v_OperationStopTime ) AS VARCHAR(20) )  + ' seconds';
 
    DECLARE
       @v_CurSchema AS SYSNAME
@@ -215,13 +258,27 @@ BEGIN
       WHERE
          s.StatisticsMaintenanceId = @v_Counter;
 
-      SET @v_UpdateStatisticsCmd = 'UPDATE STATISTICS ' + @v_CurSchema + '.' + @v_CurTable + ' ' + @v_CurIndex + ' WITH FULLSCAN';
-      EXECUTE sp_executesql @v_UpdateStatisticsCmd;
+      BEGIN TRY
+         SET @v_OperationStartTime = GETDATE();
+         SET @v_UpdateStatisticsCmd = 'UPDATE STATISTICS ' + @v_CurSchema + '.' + @v_CurTable + ' ' + @v_CurIndex + ' WITH FULLSCAN';
+         EXECUTE sp_executesql @v_UpdateStatisticsCmd;
+         SET @v_OperationStopTime = GETDATE();
+
+         SELECT @v_EmailReport = @v_EmailReport + @v_NewLine + 'Updated statistics with full scan: ' + @v_CurSchema + '.' + @v_CurTable + '.' + @v_CurIndex + @v_NewLine + '...was previously updated on ' + CAST( @v_CurStatsLastUpdatedTime AS VARCHAR(20) ) + ', table had ' + CAST( @v_CurRowCountOnLastStatsUpdate AS VARCHAR(20) ) + ' rows at time of last update, and table now has ' + CAST( @v_CurCurrentRowCount AS VARCHAR(20) ) + ' rows.';
+      END TRY
+      BEGIN CATCH
+         SELECT @v_EmailReport = @v_EmailReport + @v_NewLine + 'Failed to execute statistics full scan statement: ' + @v_NewLine + @v_UpdateStatisticsCmd + @v_NewLine + 'Due to exception: ' + @v_NewLine + ERROR_MESSAGE();
+      END CATCH
 
       SET @v_Counter = @v_Counter + 1;
    END;
 
    -- GOTO label to break out of execution on error
    done:
+
+   -- Email sproc results
+   SET @v_StopTime = GETDATE();
+   SET @v_EmailReport = @v_EmailReport + @v_NewLine + 'Started At: ' + CAST( @v_StartTime AS VARCHAR(20) ) + ' Ended At: ' + CAST( @v_StopTime AS VARCHAR(20) ) + ' Total Execution Time in Minutes: ' + CAST( DATEDIFF( MINUTE, @v_StartTime, @v_StopTime ) AS VARCHAR(20) );
+   EXECUTE msdb.dbo.sp_send_dbmail @recipients = @p_RecipientEmail, @subject = @v_EmailSubject, @body = @v_EmailReport, @profile_name = 'Maintenance Mail Profile';
 END;
 GO
