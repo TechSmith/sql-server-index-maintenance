@@ -34,7 +34,9 @@ ALTER PROCEDURE dbo.proc_RunUpdateStatistics
    ,@p_IsDebug AS BIT
 AS
 DECLARE
-    @v_StaleStatisticsCutoffTime DATETIME2(0) = DATEADD(DAY, -30, GETDATE())
+    @v_StartTime AS DATETIME2
+   ,@v_StopTime AS DATETIME2
+   ,@v_StaleStatisticsCutoffTime DATETIME2(0) = DATEADD(DAY, -30, GETDATE())
    ,@v_GetTablesCmd NVARCHAR(MAX)
    ,@v_GetStaleStatisticsCmd NVARCHAR(MAX)
    ,@v_EmailReport AS NVARCHAR( MAX )
