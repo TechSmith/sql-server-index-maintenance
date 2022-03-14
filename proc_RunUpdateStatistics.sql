@@ -274,7 +274,7 @@ BEGIN
 
          SELECT @v_QueriesExecuted = @v_QueriesExecuted + @v_NewLine + @v_UpdateStatisticsCmd;
 
-         SELECT @v_EmailReport = @v_EmailReport + @v_NewLine + 'Updated statistics with full scan: ' + @v_CurSchema + '.' + @v_CurTable + '.' + @v_CurIndex + @v_NewLine + '...was previously updated on ' + CAST( @v_CurStatsLastUpdatedTime AS VARCHAR(20) ) + ', table had ' + CAST( @v_CurRowCountOnLastStatsUpdate AS VARCHAR(20) ) + ' rows at time of last update, and table now has ' + CAST( @v_CurCurrentRowCount AS VARCHAR(20) ) + ' rows.';
+         SELECT @v_EmailReport = @v_EmailReport + @v_NewLine + 'Updated statistics with full scan: ' + @v_CurSchema + '.' + @v_CurTable + '.' + @v_CurIndex + @v_NewLine + '...was previously updated on ' + CASE WHEN @v_CurStatsLastUpdatedTime IS NULL THEN 'NEVER' ELSE CAST( @v_CurStatsLastUpdatedTime AS VARCHAR(20) ) END + ', table had ' + CASE WHEN @v_CurRowCountOnLastStatsUpdate IS NULL THEN 'NONE' ELSE CAST( @v_CurRowCountOnLastStatsUpdate AS VARCHAR(20) ) END + ' rows at time of last update, and table now has ' + CAST( @v_CurCurrentRowCount AS VARCHAR(20) ) + ' rows.';
       END TRY
       BEGIN CATCH
          SELECT @v_EmailReport = @v_EmailReport + @v_NewLine + 'Failed to execute statistics full scan statement: ' + @v_NewLine + @v_UpdateStatisticsCmd + @v_NewLine + 'Due to exception: ' + @v_NewLine + ERROR_MESSAGE();
