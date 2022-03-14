@@ -120,6 +120,7 @@ BEGIN
    SET @v_OperationStopTime = GETDATE();
 
    SELECT @v_EmailReport = @v_EmailReport + @v_NewLine + 'Finished querying for database tables. ' + 'Started At: ' + CAST( @v_OperationStartTime AS VARCHAR(20) ) + ' Ended At: ' + CAST( @v_OperationStopTime AS VARCHAR(20) ) + ' Took ' + CAST( DATEDIFF( SECOND, @v_OperationStartTime, @v_OperationStopTime ) AS VARCHAR(20) )  + ' seconds';
+   SELECT @v_QueriesExecuted = @v_QueriesExecuted + @v_NewLine + @v_NewLine + 'Get tables command: ' + @v_GetTablesCmd;
 
    DECLARE
       @v_CurCountSchema AS SYSNAME
@@ -153,6 +154,7 @@ BEGIN
 
       BEGIN TRY
          INSERT INTO @v_RowCountsTable EXECUTE sp_executesql @v_GetRowCountCmd;
+         SELECT @v_QueriesExecuted = @v_QueriesExecuted + @v_NewLine + @v_NewLine + 'Get table row count command: ' + @v_GetRowCountCmd;
       END TRY
       BEGIN CATCH
          SELECT @v_EmailReport = @v_EmailReport + @v_NewLine + 'Failed to query table row count for ' + @v_CurCountSchema + '.' + @v_CurCountTable + ': ' + @v_NewLine + ERROR_MESSAGE();
@@ -209,6 +211,8 @@ BEGIN
       GOTO done;
    END CATCH;
 
+   SELECT @v_QueriesExecuted = @v_QueriesExecuted + @v_NewLine + @v_NewLine + 'Get stale statistics info command: ' + @v_GetStaleStatisticsCmd;
+
    INSERT INTO @v_StaleStatisticsInformationWithRowCountTable
       SELECT
          s.SchemaName
@@ -226,6 +230,8 @@ BEGIN
          r.TableRowCount >= @p_MinimumTableRowCountToUpdate
 
    SET @v_OperationStopTime = GETDATE();
+
+   SELECT @v_QueriesExecuted = @v_QueriesExecuted + @v_NewLine + @v_NewLine + 'Joined stale statistics info with table row counts';
 
    SELECT @v_EmailReport = @v_EmailReport + @v_NewLine + 'Finished querying for statistics in need of update. ' + 'Started At: ' + CAST( @v_OperationStartTime AS VARCHAR(20) ) + ' Ended At: ' + CAST( @v_OperationStopTime AS VARCHAR(20) ) + ' Took ' + CAST( DATEDIFF( SECOND, @v_OperationStartTime, @v_OperationStopTime ) AS VARCHAR(20) )  + ' seconds';
 
@@ -264,6 +270,8 @@ BEGIN
          EXECUTE sp_executesql @v_UpdateStatisticsCmd;
          SET @v_OperationStopTime = GETDATE();
 
+         SELECT @v_QueriesExecuted = @v_QueriesExecuted + @v_NewLine + @v_UpdateStatisticsCmd;
+
          SELECT @v_EmailReport = @v_EmailReport + @v_NewLine + 'Updated statistics with full scan: ' + @v_CurSchema + '.' + @v_CurTable + '.' + @v_CurIndex + @v_NewLine + '...was previously updated on ' + CAST( @v_CurStatsLastUpdatedTime AS VARCHAR(20) ) + ', table had ' + CAST( @v_CurRowCountOnLastStatsUpdate AS VARCHAR(20) ) + ' rows at time of last update, and table now has ' + CAST( @v_CurCurrentRowCount AS VARCHAR(20) ) + ' rows.';
       END TRY
       BEGIN CATCH
@@ -271,6 +279,12 @@ BEGIN
       END CATCH
 
       SET @v_Counter = @v_Counter + 1;
+   END;
+
+   -- Assemble the debugging output and append if enabled
+   IF @p_IsDebug = 1
+   BEGIN
+      SELECT @v_EmailReport = @v_EmailReport + @v_NewLine + @v_NewLine + 'Debug Output Enabled' + @v_NewLine + @v_NewLine + '---------------------' + @v_NewLine + @v_NewLine + @v_QueriesExecuted;
    END;
 
    -- GOTO label to break out of execution on error
