@@ -18,6 +18,7 @@
 --     @p_DatabaseName = 'nameOfDatabase'
 --    ,@p_RecipientEmail = 'first.last@email.com'
 --    ,@p_MinimumTableRowCountToUpdate = 1000
+--    ,@p_MinimumIndexPageCountToUpdate = 1000
 --    ,@p_DaysSinceStatsUpdatedToForceUpdate = 30
 --    ,@p_IsDebug = 0
 --
@@ -32,6 +33,7 @@ ALTER PROCEDURE dbo.proc_RunUpdateStatistics
     @p_DatabaseName AS SYSNAME
    ,@p_RecipientEmail AS NVARCHAR( 256 )
    ,@p_MinimumTableRowCountToUpdate AS BIGINT
+   ,@p_MinimumIndexPageCountToUpdate AS BIGINT
    ,@p_DaysSinceStatsUpdatedToForceUpdate AS SMALLINT
    ,@p_IsDebug AS BIT
 AS
@@ -200,7 +202,9 @@ BEGIN
       INNER JOIN
          ['+ @p_DatabaseName +'].INFORMATION_SCHEMA.TABLES AS t ON t.TABLE_SCHEMA = s.name AND t.TABLE_NAME = o.name AND t.TABLE_TYPE = ''BASE TABLE'' -- Remove system tables from list
       CROSS APPLY
-         ['+ @p_DatabaseName +'].sys.dm_db_stats_properties(o.object_id, stats.stats_id) AS stats_props
+         sys.dm_db_stats_properties(o.object_id, stats.stats_id) AS stats_props
+      CROSS APPLY
+         sys.dm_db_index_physical_stats( DB_ID( '''+ @p_DatabaseName + ''' ) , o.object_id, i.index_id, NULL, ''LIMITED'') AS phys_stats
       WHERE
          i.auto_created = 0
       AND
@@ -209,6 +213,9 @@ BEGIN
          (stats_props.last_updated IS NULL
       OR
          stats_props.last_updated <= @v_StaleStatisticsCutoffTime)
+      AND
+         -- Indexes with less than the specified number of page files are not big enough to worry about
+         phys_stats.page_count >= ' + @p_MinimumIndexPageCountToUpdate + '
       ORDER BY
          stats_props.last_updated
       ASC';
