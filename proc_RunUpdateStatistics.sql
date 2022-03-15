@@ -32,7 +32,7 @@ ALTER PROCEDURE dbo.proc_RunUpdateStatistics
     @p_DatabaseName AS SYSNAME
    ,@p_RecipientEmail AS NVARCHAR( 256 )
    ,@p_MinimumTableRowCountToUpdate AS BIGINT
-   ,@p_DaysSinceLastUpdatedToForceUpdate AS SMALLINT
+   ,@p_DaysSinceStatsUpdatedToForceUpdate AS SMALLINT
    ,@p_IsDebug AS BIT
 AS
 DECLARE
