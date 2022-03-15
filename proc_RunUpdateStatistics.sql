@@ -18,6 +18,7 @@
 --     @p_DatabaseName = 'nameOfDatabase'
 --    ,@p_RecipientEmail = 'first.last@email.com'
 --    ,@p_MinimumTableRowCountToUpdate = 1000
+--    ,@p_DaysSinceStatsUpdatedToForceUpdate = 30
 --    ,@p_IsDebug = 0
 --
 --  Enabling IsDebug will cause additional information to be included in the email report.
@@ -31,6 +32,7 @@ ALTER PROCEDURE dbo.proc_RunUpdateStatistics
     @p_DatabaseName AS SYSNAME
    ,@p_RecipientEmail AS NVARCHAR( 256 )
    ,@p_MinimumTableRowCountToUpdate AS BIGINT
+   ,@p_DaysSinceLastUpdatedToForceUpdate AS SMALLINT
    ,@p_IsDebug AS BIT
 AS
 DECLARE
@@ -42,7 +44,7 @@ DECLARE
    ,@v_EmailSubject AS NVARCHAR(255)
    ,@v_QueriesExecuted AS NVARCHAR(MAX)
    ,@v_NewLine AS CHAR(2) = CHAR(13)+CHAR(10)
-   ,@v_StaleStatisticsCutoffTime DATETIME2(0) = DATEADD(DAY, -30, GETDATE());
+   ,@v_StaleStatisticsCutoffTime DATETIME2(0);
 
 DECLARE @v_DatabaseTablesTable AS TABLE
    (
@@ -97,6 +99,14 @@ BEGIN
       SELECT @v_EmailReport = @v_EmailReport + @v_NewLine + 'Database not found: ' + @p_DatabaseName;
       GOTO done;
    END;
+
+   IF @p_DaysSinceStatsUpdatedToForceUpdate < 0
+   BEGIN
+      SELECT @v_EmailReport = @v_EmailReport + @v_NewLine + 'p_DaysSinceStatsUpdatedToForceUpdate must be greater than or equal to 0. Was ' + @p_DaysSinceStatsUpdatedToForceUpdate;
+      GOTO done;
+   END
+
+   SET @v_StaleStatisticsCutoffTime = DATEADD(DAY, -@p_DaysSinceStatsUpdatedToForceUpdate, GETDATE());
 
    DECLARE @v_GetTablesCmd NVARCHAR(MAX);
    SET @v_GetTablesCmd = '
