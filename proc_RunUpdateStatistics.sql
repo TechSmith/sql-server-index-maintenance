@@ -116,7 +116,7 @@ BEGIN
       FROM
          ['+ @p_DatabaseName +'].INFORMATION_SCHEMA.TABLES AS t
       WHERE
-         t.TABLE_TYPE = ''BASE TABLE''';
+         t.TABLE_TYPE = ''BASE TABLE'''; -- Only include tables and not views
 
    SET @v_OperationStartTime = GETDATE();
 
