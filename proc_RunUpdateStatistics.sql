@@ -34,17 +34,15 @@ ALTER PROCEDURE dbo.proc_RunUpdateStatistics
    ,@p_IsDebug AS BIT
 AS
 DECLARE
-    @v_StartTime AS DATETIME2
-   ,@v_StopTime AS DATETIME2
-   ,@v_StaleStatisticsCutoffTime DATETIME2(0) = DATEADD(DAY, -30, GETDATE())
-   ,@v_GetTablesCmd NVARCHAR(MAX)
-   ,@v_GetStaleStatisticsCmd NVARCHAR(MAX)
-   ,@v_EmailReport AS NVARCHAR( MAX )
-   ,@v_EmailSubject AS NVARCHAR( 255 )
-   ,@v_QueriesExecuted AS NVARCHAR( MAX )
-   ,@v_NewLine AS CHAR(2) = CHAR(13)+CHAR(10)
+    @v_StartTime AS DATETIME2(0)
+   ,@v_StopTime AS DATETIME2(0)
    ,@v_OperationStartTime AS DATETIME2(0)
-   ,@v_OperationStopTime AS DATETIME2(0);
+   ,@v_OperationStopTime AS DATETIME2(0)
+   ,@v_EmailReport AS NVARCHAR(MAX)
+   ,@v_EmailSubject AS NVARCHAR(255)
+   ,@v_QueriesExecuted AS NVARCHAR(MAX)
+   ,@v_NewLine AS CHAR(2) = CHAR(13)+CHAR(10)
+   ,@v_StaleStatisticsCutoffTime DATETIME2(0) = DATEADD(DAY, -30, GETDATE());
 
 DECLARE @v_DatabaseTablesTable AS TABLE
    (
@@ -100,6 +98,7 @@ BEGIN
       GOTO done;
    END;
 
+   DECLARE @v_GetTablesCmd NVARCHAR(MAX);
    SET @v_GetTablesCmd = '
       SELECT
          t.TABLE_SCHEMA AS SchemaName
@@ -125,7 +124,7 @@ BEGIN
    SELECT @v_QueriesExecuted = @v_QueriesExecuted + @v_NewLine + @v_NewLine + 'Get tables command: ' + @v_GetTablesCmd;
 
    DECLARE
-      @v_CurCountSchema AS SYSNAME
+       @v_CurCountSchema AS SYSNAME
       ,@v_CurCountTable AS SYSNAME
       ,@v_GetRowCountCmd AS NVARCHAR(MAX)
       ,@v_RowCountCounter AS SMALLINT
@@ -136,10 +135,11 @@ BEGIN
 
    SET @v_OperationStartTime = GETDATE();
 
+   -- Get current table row counts to compare to when stats were last updated
    WHILE ( @v_RowCountCounter <= @v_DatabaseTablesLastRow )
    BEGIN
       SELECT
-         @v_CurCountSchema = d.SchemaName
+          @v_CurCountSchema = d.SchemaName
          ,@v_CurCountTable = d.TableName
       FROM
          @v_DatabaseTablesTable AS d
@@ -148,7 +148,7 @@ BEGIN
 
       SET @v_GetRowCountCmd = '
          SELECT
-            ''' + @v_CurCountSchema + ''' AS SchemaName
+             ''' + @v_CurCountSchema + ''' AS SchemaName
             ,''' + @v_CurCountTable + ''' AS TableName
             ,COUNT(1) AS TableRowCount
          FROM
@@ -170,9 +170,11 @@ BEGIN
 
    SELECT @v_EmailReport = @v_EmailReport + @v_NewLine + 'Finished querying for table row counts. ' + 'Started At: ' + CAST( @v_OperationStartTime AS VARCHAR(20) ) + ' Ended At: ' + CAST( @v_OperationStopTime AS VARCHAR(20) ) + ' Took ' + CAST( DATEDIFF( SECOND, @v_OperationStartTime, @v_OperationStopTime ) AS VARCHAR(20) )  + ' seconds';
 
+   -- Find statistics that need to be updated
+   DECLARE @v_GetStaleStatisticsCmd NVARCHAR(MAX);
    SET @v_GetStaleStatisticsCmd = '
       SELECT
-         s.name AS SchemaName
+          s.name AS SchemaName
          ,o.name AS TableName
          ,i.name AS IndexName
          ,stats_props.last_updated AS StatsLastUpdatedTime
@@ -215,9 +217,10 @@ BEGIN
 
    SELECT @v_QueriesExecuted = @v_QueriesExecuted + @v_NewLine + @v_NewLine + 'Get stale statistics info command: ' + @v_GetStaleStatisticsCmd;
 
+   -- Join together with current row count information
    INSERT INTO @v_StaleStatisticsInformationWithRowCountTable
       SELECT
-         s.SchemaName
+          s.SchemaName
          ,s.TableName
          ,s.IndexName
          ,s.StatsLastUpdatedTime
@@ -238,7 +241,7 @@ BEGIN
    SELECT @v_EmailReport = @v_EmailReport + @v_NewLine + 'Finished querying for statistics in need of update. ' + 'Started At: ' + CAST( @v_OperationStartTime AS VARCHAR(20) ) + ' Ended At: ' + CAST( @v_OperationStopTime AS VARCHAR(20) ) + ' Took ' + CAST( DATEDIFF( SECOND, @v_OperationStartTime, @v_OperationStopTime ) AS VARCHAR(20) )  + ' seconds';
 
    DECLARE
-      @v_CurSchema AS SYSNAME
+       @v_CurSchema AS SYSNAME
       ,@v_CurTable AS SYSNAME
       ,@v_CurIndex AS SYSNAME
       ,@v_CurStatsLastUpdatedTime AS DATETIME2(0)
@@ -255,7 +258,7 @@ BEGIN
    WHILE ( @v_Counter <= @v_LastRow )
    BEGIN
       SELECT
-         @v_CurSchema = '[' + s.SchemaName + ']'
+          @v_CurSchema = '[' + s.SchemaName + ']'
          ,@v_CurTable = '[' + s.TableName + ']'
          ,@v_CurIndex = '[' + s.IndexName + ']'
          ,@v_CurStatsLastUpdatedTime = s.StatsLastUpdatedTime
