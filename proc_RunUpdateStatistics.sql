@@ -17,7 +17,6 @@
 -- EXECUTE dbo.proc_RunUpdateStatistics
 --     @p_DatabaseName = 'nameOfDatabase'
 --    ,@p_RecipientEmail = 'first.last@email.com'
---    ,@p_MinimumTableRowCountToUpdate = 1000
 --    ,@p_MinimumIndexPageCountToUpdate = 1000
 --    ,@p_DaysSinceStatsUpdatedToForceUpdate = 30
 --    ,@p_IsDebug = 0
@@ -32,7 +31,6 @@ GO
 ALTER PROCEDURE dbo.proc_RunUpdateStatistics
     @p_DatabaseName AS SYSNAME
    ,@p_RecipientEmail AS NVARCHAR( 256 )
-   ,@p_MinimumTableRowCountToUpdate AS BIGINT
    ,@p_MinimumIndexPageCountToUpdate AS BIGINT
    ,@p_DaysSinceStatsUpdatedToForceUpdate AS SMALLINT
    ,@p_IsDebug AS BIT
@@ -48,40 +46,17 @@ DECLARE
    ,@v_NewLine AS CHAR(2) = CHAR(13)+CHAR(10)
    ,@v_StaleStatisticsCutoffTime DATETIME2(0);
 
-DECLARE @v_DatabaseTablesTable AS TABLE
-   (
-      DatabaseTableId INT IDENTITY( 1,1 )
-      ,SchemaName SYSNAME
-      ,TableName SYSNAME
-   );
-
-DECLARE @v_RowCountsTable AS TABLE
-   (
-      SchemaName SYSNAME
-      ,TableName SYSNAME
-      ,TableRowCount BIGINT
-   );
-
 -- Table variable to store the statistics that are in need of maintenance
 DECLARE @v_StaleStatisticsInformationTable AS TABLE
    (  
        StatisticsMaintenanceId INT IDENTITY( 1,1 )
       ,SchemaName SYSNAME
+      ,TableId INT
       ,TableName SYSNAME
+      ,IndexId INT
       ,IndexName SYSNAME NULL -- Heaps do not have an index name
       ,StatsLastUpdatedTime DATETIME2(0)
       ,RowCountOnLastStatsUpdate BIGINT
-   );
-
-DECLARE @v_StaleStatisticsInformationWithRowCountTable AS TABLE
-   (  
-       StatisticsMaintenanceId INT IDENTITY( 1,1 )
-      ,SchemaName SYSNAME
-      ,TableName SYSNAME
-      ,IndexName SYSNAME NULL -- Heaps do not have an index name
-      ,StatsLastUpdatedTime DATETIME2(0)
-      ,RowCountOnLastStatsUpdate BIGINT
-      ,CurrentTableRowCount BIGINT
    );
 
 BEGIN
@@ -110,84 +85,14 @@ BEGIN
 
    SET @v_StaleStatisticsCutoffTime = DATEADD(DAY, -@p_DaysSinceStatsUpdatedToForceUpdate, GETDATE());
 
-   DECLARE @v_GetTablesCmd NVARCHAR(MAX);
-   SET @v_GetTablesCmd = '
-      SELECT
-         t.TABLE_SCHEMA AS SchemaName
-         ,t.TABLE_NAME AS TableName
-      FROM
-         ['+ @p_DatabaseName +'].INFORMATION_SCHEMA.TABLES AS t
-      WHERE
-         t.TABLE_TYPE = ''BASE TABLE'''; -- Only include tables and not views
-
-   SET @v_OperationStartTime = GETDATE();
-
-   BEGIN TRY
-      INSERT INTO @v_DatabaseTablesTable EXECUTE sp_executesql @v_GetTablesCmd;
-   END TRY
-   BEGIN CATCH
-      SELECT @v_EmailReport = @v_EmailReport + @v_NewLine + 'Failed to query database tables due to exception: ' + @v_NewLine + ERROR_MESSAGE();
-      GOTO done;
-   END CATCH;
-
-   SET @v_OperationStopTime = GETDATE();
-
-   SELECT @v_EmailReport = @v_EmailReport + @v_NewLine + 'Finished querying for database tables. ' + 'Started At: ' + CAST( @v_OperationStartTime AS VARCHAR(20) ) + ' Ended At: ' + CAST( @v_OperationStopTime AS VARCHAR(20) ) + ' Took ' + CAST( DATEDIFF( SECOND, @v_OperationStartTime, @v_OperationStopTime ) AS VARCHAR(20) )  + ' seconds';
-   SELECT @v_QueriesExecuted = @v_QueriesExecuted + @v_NewLine + @v_NewLine + 'Get tables command: ' + @v_GetTablesCmd;
-
-   DECLARE
-       @v_CurCountSchema AS SYSNAME
-      ,@v_CurCountTable AS SYSNAME
-      ,@v_GetRowCountCmd AS NVARCHAR(MAX)
-      ,@v_RowCountCounter AS SMALLINT
-      ,@v_DatabaseTablesLastRow AS SMALLINT
-
-   SET @v_RowCountCounter = 1;
-   SELECT @v_DatabaseTablesLastRow = COUNT(1) FROM @v_DatabaseTablesTable;
-
-   SET @v_OperationStartTime = GETDATE();
-
-   -- Get current table row counts to compare to when stats were last updated
-   WHILE ( @v_RowCountCounter <= @v_DatabaseTablesLastRow )
-   BEGIN
-      SELECT
-          @v_CurCountSchema = d.SchemaName
-         ,@v_CurCountTable = d.TableName
-      FROM
-         @v_DatabaseTablesTable AS d
-      WHERE
-         d.DatabaseTableId = @v_RowCountCounter;
-
-      SET @v_GetRowCountCmd = '
-         SELECT
-             ''' + @v_CurCountSchema + ''' AS SchemaName
-            ,''' + @v_CurCountTable + ''' AS TableName
-            ,COUNT(1) AS TableRowCount
-         FROM
-            ['+ @p_DatabaseName +'].['+ @v_CurCountSchema +'].['+ @v_CurCountTable +']';
-
-      BEGIN TRY
-         INSERT INTO @v_RowCountsTable EXECUTE sp_executesql @v_GetRowCountCmd;
-         SELECT @v_QueriesExecuted = @v_QueriesExecuted + @v_NewLine + @v_NewLine + 'Get table row count command: ' + @v_GetRowCountCmd;
-      END TRY
-      BEGIN CATCH
-         SELECT @v_EmailReport = @v_EmailReport + @v_NewLine + 'Failed to query table row count for ' + @v_CurCountSchema + '.' + @v_CurCountTable + ': ' + @v_NewLine + ERROR_MESSAGE();
-         GOTO done;
-      END CATCH;
-
-      SET @v_RowCountCounter = @v_RowCountCounter + 1;
-   END;
-
-   SET @v_OperationStopTime = GETDATE();
-
-   SELECT @v_EmailReport = @v_EmailReport + @v_NewLine + 'Finished querying for table row counts. ' + 'Started At: ' + CAST( @v_OperationStartTime AS VARCHAR(20) ) + ' Ended At: ' + CAST( @v_OperationStopTime AS VARCHAR(20) ) + ' Took ' + CAST( DATEDIFF( SECOND, @v_OperationStartTime, @v_OperationStopTime ) AS VARCHAR(20) )  + ' seconds';
-
    -- Find statistics that need to be updated
    DECLARE @v_GetStaleStatisticsCmd NVARCHAR(MAX);
    SET @v_GetStaleStatisticsCmd = '
       SELECT
           s.name AS SchemaName
+         ,o.object_id AS TableId
          ,o.name AS TableName
+         ,i.index_id AS IndexId
          ,i.name AS IndexName
          ,stats_props.last_updated AS StatsLastUpdatedTime
          ,stats_props.unfiltered_rows AS RowCountOnLastStatsUpdate
@@ -215,7 +120,7 @@ BEGIN
          stats_props.last_updated <= @v_StaleStatisticsCutoffTime)
       AND
          -- Indexes with less than the specified number of page files are not big enough to worry about
-         phys_stats.page_count >= ' + @p_MinimumIndexPageCountToUpdate + '
+         phys_stats.page_count >= ' + CAST( @p_MinimumIndexPageCountToUpdate AS VARCHAR(20) ) + '
       ORDER BY
          stats_props.last_updated
       ASC';
@@ -234,33 +139,16 @@ BEGIN
 
    SELECT @v_QueriesExecuted = @v_QueriesExecuted + @v_NewLine + @v_NewLine + 'Get stale statistics info command: ' + @v_GetStaleStatisticsCmd;
 
-   -- Join together with current row count information
-   INSERT INTO @v_StaleStatisticsInformationWithRowCountTable
-      SELECT
-          s.SchemaName
-         ,s.TableName
-         ,s.IndexName
-         ,s.StatsLastUpdatedTime
-         ,s.RowCountOnLastStatsUpdate
-         ,r.TableRowCount
-      FROM
-         @v_StaleStatisticsInformationTable AS s
-      INNER JOIN
-         @v_RowCountsTable AS r ON r.SchemaName = s.SchemaName AND r.TableName = s.TableName
-      -- Skip tables that have very few rows, as updated stats will matter much less
-      WHERE
-         r.TableRowCount >= @p_MinimumTableRowCountToUpdate
-
    SET @v_OperationStopTime = GETDATE();
-
-   SELECT @v_QueriesExecuted = @v_QueriesExecuted + @v_NewLine + @v_NewLine + 'Joined stale statistics info with table row counts';
 
    SELECT @v_EmailReport = @v_EmailReport + @v_NewLine + 'Finished querying for statistics in need of update. ' + 'Started At: ' + CAST( @v_OperationStartTime AS VARCHAR(20) ) + ' Ended At: ' + CAST( @v_OperationStopTime AS VARCHAR(20) ) + ' Took ' + CAST( DATEDIFF( SECOND, @v_OperationStartTime, @v_OperationStopTime ) AS VARCHAR(20) )  + ' seconds';
 
    DECLARE
        @v_CurSchema AS SYSNAME
-      ,@v_CurTable AS SYSNAME
-      ,@v_CurIndex AS SYSNAME
+      ,@v_CurTableId AS INT
+      ,@v_CurTableName AS SYSNAME
+      ,@v_CurIndexId AS INT
+      ,@v_CurIndexName AS SYSNAME
       ,@v_CurStatsLastUpdatedTime AS DATETIME2(0)
       ,@v_CurRowCountOnLastStatsUpdate AS BIGINT
       ,@v_CurCurrentRowCount AS BIGINT
@@ -269,32 +157,41 @@ BEGIN
       ,@v_UpdateStatisticsCmd AS NVARCHAR(MAX)
 
    SET @v_Counter = 1;
-   SELECT @v_LastRow = COUNT(1) FROM @v_StaleStatisticsInformationWithRowCountTable;
+   SELECT @v_LastRow = COUNT(1) FROM @v_StaleStatisticsInformationTable;
 
    -- Loop through the statistics and force a full scan
    WHILE ( @v_Counter <= @v_LastRow )
    BEGIN
       SELECT
           @v_CurSchema = '[' + s.SchemaName + ']'
-         ,@v_CurTable = '[' + s.TableName + ']'
-         ,@v_CurIndex = '[' + s.IndexName + ']'
+         ,@v_CurTableId = s.TableId
+         ,@v_CurTableName = '[' + s.TableName + ']'
+         ,@v_CurIndexId = s.IndexId
+         ,@v_CurIndexName = '[' + s.IndexName + ']'
          ,@v_CurStatsLastUpdatedTime = s.StatsLastUpdatedTime
          ,@v_CurRowCountOnLastStatsUpdate = s.RowCountOnLastStatsUpdate
-         ,@v_CurCurrentRowCount = s.CurrentTableRowCount
       FROM
-         @v_StaleStatisticsInformationWithRowCountTable AS s
+         @v_StaleStatisticsInformationTable AS s
       WHERE
          s.StatisticsMaintenanceId = @v_Counter;
 
       BEGIN TRY
          SET @v_OperationStartTime = GETDATE();
-         SET @v_UpdateStatisticsCmd = 'UPDATE STATISTICS ' + @v_CurSchema + '.' + @v_CurTable + ' ' + @v_CurIndex + ' WITH FULLSCAN';
+         SET @v_UpdateStatisticsCmd = 'UPDATE STATISTICS ' + @v_CurSchema + '.' + @v_CurTableName + ' ' + @v_CurIndexName + ' WITH FULLSCAN';
          EXECUTE sp_executesql @v_UpdateStatisticsCmd;
          SET @v_OperationStopTime = GETDATE();
 
          SELECT @v_QueriesExecuted = @v_QueriesExecuted + @v_NewLine + @v_UpdateStatisticsCmd;
 
-         SELECT @v_EmailReport = @v_EmailReport + @v_NewLine + 'Updated statistics with full scan: ' + @v_CurSchema + '.' + @v_CurTable + '.' + @v_CurIndex + @v_NewLine + '...was previously updated on ' + CASE WHEN @v_CurStatsLastUpdatedTime IS NULL THEN 'NEVER' ELSE CAST( @v_CurStatsLastUpdatedTime AS VARCHAR(20) ) END + ', table had ' + CASE WHEN @v_CurRowCountOnLastStatsUpdate IS NULL THEN 'NONE' ELSE CAST( @v_CurRowCountOnLastStatsUpdate AS VARCHAR(20) ) END + ' rows at time of last update, and table now has ' + CAST( @v_CurCurrentRowCount AS VARCHAR(20) ) + ' rows.';
+         SELECT @v_CurCurrentRowCount = stats_props.unfiltered_rows
+         FROM sys.dm_db_stats_properties(@v_CurTableId, @v_CurIndexId) AS stats_props
+
+         IF @v_CurCurrentRowCount IS NULL
+         BEGIN
+            SET @v_CurCurrentRowCount = 0
+         END
+
+         SELECT @v_EmailReport = @v_EmailReport + @v_NewLine + 'Updated statistics with full scan: ' + @v_CurSchema + '.' + @v_CurTableName + '.' + @v_CurIndexName + @v_NewLine + '...was previously updated on ' + CASE WHEN @v_CurStatsLastUpdatedTime IS NULL THEN 'NEVER' ELSE CAST( @v_CurStatsLastUpdatedTime AS VARCHAR(20) ) END + ', table had ' + CASE WHEN @v_CurRowCountOnLastStatsUpdate IS NULL THEN '0' ELSE CAST( @v_CurRowCountOnLastStatsUpdate AS VARCHAR(20) ) END + ' rows at time of last update, and table now has ' + CAST( @v_CurCurrentRowCount AS VARCHAR(20) ) + ' rows.';
       END TRY
       BEGIN CATCH
          SELECT @v_EmailReport = @v_EmailReport + @v_NewLine + 'Failed to execute statistics full scan statement: ' + @v_NewLine + @v_UpdateStatisticsCmd + @v_NewLine + 'Due to exception: ' + @v_NewLine + ERROR_MESSAGE();
