@@ -272,7 +272,7 @@ BEGIN
             EXECUTE sp_executesql @v_SqlRebuildHeap;
             SET @v_OperationStopTime = GETDATE();
             SELECT @v_EmailReport = @v_EmailReport + @v_NewLine + 'Rebuilt Heap: ' + @v_CurSchema + '.' + @v_CurTable + @v_NewLine + '...was ' + CAST( @v_CurFragmentation AS VARCHAR(20) ) + ' percent fragmented.'
-            SELECT @v_EmailReport = @v_EmailReport + @v_NewLine + 'Started At: ' + CAST( @v_OperationStartTime AS VARCHAR(20) ) + ' Ended At: ' + CAST( @v_OperationStopTime AS VARCHAR(20) ) + ' Total Execution Time in Minutes: ' + CAST( DATEDIFF( MINUTE, @v_StartTime, @v_StopTime ) AS VARCHAR(20) );
+            SELECT @v_EmailReport = @v_EmailReport + @v_NewLine + 'Started At: ' + CAST( @v_OperationStartTime AS VARCHAR(20) ) + ' Ended At: ' + CAST( @v_OperationStopTime AS VARCHAR(20) ) + ' Total Execution Time in Minutes: ' + CAST( DATEDIFF( MINUTE, @v_OperationStartTime, @v_OperationStopTime ) AS VARCHAR(20) );
             SELECT @v_QueriesExecuted = @v_QueriesExecuted + @v_NewLine + @v_SqlRebuildHeap;
          END TRY
          BEGIN CATCH
@@ -285,7 +285,7 @@ BEGIN
             EXECUTE sp_executesql @v_SqlRebuildIndex;
             SET @v_OperationStopTime = GETDATE();
             SELECT @v_EmailReport = @v_EmailReport + @v_NewLine + 'Rebuilt Index: ' + @v_CurSchema + '.' + @v_CurTable + '.' + @v_CurIndex + @v_NewLine + '...was ' + CAST( @v_CurFragmentation AS VARCHAR(20) ) + ' percent fragmented.';
-            SELECT @v_EmailReport = @v_EmailReport + @v_NewLine + 'Started At: ' + CAST( @v_OperationStartTime AS VARCHAR(20) ) + ' Ended At: ' + CAST( @v_OperationStopTime AS VARCHAR(20) ) + ' Total Execution Time in Minutes: ' + CAST( DATEDIFF( MINUTE, @v_StartTime, @v_StopTime ) AS VARCHAR(20) );
+            SELECT @v_EmailReport = @v_EmailReport + @v_NewLine + 'Started At: ' + CAST( @v_OperationStartTime AS VARCHAR(20) ) + ' Ended At: ' + CAST( @v_OperationStopTime AS VARCHAR(20) ) + ' Total Execution Time in Minutes: ' + CAST( DATEDIFF( MINUTE, @v_OperationStartTime, @v_OperationStopTime ) AS VARCHAR(20) );
             SELECT @v_QueriesExecuted = @v_QueriesExecuted + @v_NewLine + @v_SqlRebuildIndex;
          END TRY
          BEGIN CATCH
@@ -300,7 +300,7 @@ BEGIN
             EXECUTE sp_executesql @v_SqlReorganizeIndex;
             SET @v_OperationStopTime = GETDATE();
             SELECT @v_EmailReport = @v_EmailReport + @v_NewLine + 'Reorganized Index: ' + @v_CurSchema + '.' + @v_CurTable + '.' + @v_CurIndex  + @v_NewLine + '...was ' + CAST( @v_CurFragmentation AS VARCHAR(20) ) + ' percent fragmented.';
-            SELECT @v_EmailReport = @v_EmailReport + @v_NewLine + 'Started At: ' + CAST( @v_OperationStartTime AS VARCHAR(20) ) + ' Ended At: ' + CAST( @v_OperationStopTime AS VARCHAR(20) ) + ' Total Execution Time in Minutes: ' + CAST( DATEDIFF( MINUTE, @v_StartTime, @v_StopTime ) AS VARCHAR(20) );
+            SELECT @v_EmailReport = @v_EmailReport + @v_NewLine + 'Started At: ' + CAST( @v_OperationStartTime AS VARCHAR(20) ) + ' Ended At: ' + CAST( @v_OperationStopTime AS VARCHAR(20) ) + ' Total Execution Time in Minutes: ' + CAST( DATEDIFF( MINUTE, @v_OperationStartTime, @v_OperationStopTime ) AS VARCHAR(20) );
             SELECT @v_QueriesExecuted = @v_QueriesExecuted + @v_NewLine + @v_SqlReorganizeIndex;
          END TRY
          BEGIN CATCH
