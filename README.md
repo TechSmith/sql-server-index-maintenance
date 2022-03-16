@@ -2,13 +2,15 @@
 
 A stored proceedure for Microsoft SQL Server to perform basic index maintenance for all indexes within a database. A report is generated and emailed upon completion.
 
-## Installation
+## proc_RunIndexMaintenance.sql
+
+### Installation
 
 Executing proc_RunIndexMaintenance.sql will install the stored procedure.
 
 You **must** have Database Mail configured. By default, this script expects an account name of **Maintenance Mail Account**. See the EnableDBMail.sql script if you need assistance.
 
-## Execution
+### Execution
 
 ````sql
 EXECUTE dbo.proc_RunIndexMaintenance
@@ -39,7 +41,7 @@ Valid options are:
 * 0 - Do not include additional information about the operation in the email report
 * 1 - Include additional information about the operation in the email report
 
-## Sample Report
+### Sample Report
 
 <pre>Subject: SampServer SampDB Index Report
 Index Maintenance Sproc report for server SampServer on database: SampDB
